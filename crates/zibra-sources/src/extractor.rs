@@ -263,28 +263,24 @@ pub async fn fetch_html_resilient(
                     return Ok(text);
                 }
             }
-            if let Ok(body) = fetch_via_curl(url, referer).await {
-                if body.len() > 100 {
-                    return Ok(body);
+            // curl fallback is only productive against Cloudflare / rate-limit challenges (403, 429, 503);
+            // 404, 500, or DNS errors would just double the latency unnecessarily.
+            if matches!(status.as_u16(), 403 | 429 | 503) {
+                if let Ok(body) = fetch_via_curl(url, referer).await {
+                    if body.len() > 100 {
+                        return Ok(body);
+                    }
                 }
             }
             anyhow::bail!("HTTP {}", status);
         }
-        Err(e) => {
-            if let Ok(body) = fetch_via_curl(url, referer).await {
-                if body.len() > 100 {
-                    return Ok(body);
-                }
-            }
-            Err(e.into())
-        }
+        Err(e) => Err(e.into()),
     }
 }
 
 async fn fetch_via_curl(url: &str, referer: Option<&str>) -> anyhow::Result<String> {
     let mut cmd = tokio::process::Command::new("curl");
     cmd.arg("-s")
-        .arg("-k")
         .arg("-L")
         .arg("--compressed")
         .arg("--max-time")

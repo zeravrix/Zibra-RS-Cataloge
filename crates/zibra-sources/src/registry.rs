@@ -34,6 +34,7 @@ impl LiveSourceRegistry {
     pub fn new() -> Self {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(25))
+            .connect_timeout(Duration::from_secs(8))
             .cookie_store(true)
             .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
             .build()
@@ -230,6 +231,10 @@ impl LiveSourceRegistry {
             .collect();
 
         let latencies = self.latency_ms.read().clone();
+        if sort_mode == CatalogSortMode::Alphabetical {
+            filtered.sort_by_cached_key(|s| s.name().to_lowercase());
+            return filtered;
+        }
         filtered.sort_by(|a, b| match sort_mode {
             CatalogSortMode::RecommendedOrder => a.priority_rank().cmp(&b.priority_rank()),
             CatalogSortMode::PinnedFirst => {
@@ -246,7 +251,7 @@ impl LiveSourceRegistry {
                     .cmp(&b_lat)
                     .then_with(|| a.priority_rank().cmp(&b.priority_rank()))
             }
-            CatalogSortMode::Alphabetical => a.name().to_lowercase().cmp(&b.name().to_lowercase()),
+            CatalogSortMode::Alphabetical => unreachable!(),
             CatalogSortMode::LanguageGroup => a
                 .language()
                 .cmp(b.language())

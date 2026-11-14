@@ -14,6 +14,8 @@ pub const BUNDLED: &str = include_str!("../catalog/sources.json");
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct CatalogRecord {
+    #[serde(default)]
+    pub id: Option<String>,
     pub name: String,
     pub title: String,
     pub lang: String,
@@ -74,7 +76,7 @@ pub fn build(
             skipped += 1;
             continue;
         }
-        let id = format!("zibra:{}", r.name.to_lowercase());
+        let id = r.id.clone().unwrap_or_else(|| format!("zibra:{}", r.name.to_lowercase()));
         let url = if r.domain.starts_with("http") {
             r.domain.clone()
         } else {
@@ -94,14 +96,14 @@ pub fn build(
                 }
                 Arc::new(e)
             }
-            "mangareader" => {
+            "mangareader" | "mangathemesia" => {
                 let mut e = MangaThemesiaEngine::new(id, &r.title, url, &r.lang, rank, tags, client.clone());
                 if let Some(p) = &r.list_path {
                     e = e.with_list_path(p);
                 }
                 Arc::new(e)
             }
-            "zeist" => {
+            "zeist" | "zeistmanga" => {
                 Arc::new(ZeistEngine::new(id, &r.title, url, &r.lang, rank, tags, client.clone()))
             }
             _ => {

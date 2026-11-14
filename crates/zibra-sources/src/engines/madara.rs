@@ -104,8 +104,74 @@ impl MadaraEngine {
         Some(manga)
     }
 
+    /// Cards from a listing page or an admin-ajax fragment.
+    fn parse_listing(&self, html: &str, page_url: &str) -> Vec<Manga> {
+        let card_sel = Selector::parse(
+            "div.row.c-tabs-item__content, div.page-item-detail, .manga__item, .manga-item, .item-summary, .bsx, .listupd .bs, .box, .page-listing-item, .item-thumb, .col-6, .col-md-2, .col-sm-3, .col-xs-4, article",
+        ).unwrap();
+        let direct_sel = Selector::parse(
+            "a[href*='/serie/'], a[href*='/series/'], a[href*='/manga/'], a[href*='/webtoon/'], a[href*='/comics/'], a[href*='/manhwa/']",
+        ).unwrap();
+        let doc = Html::parse_document(html);
+        let mut seen = HashSet::new();
+        let mut found: Vec<Manga> = doc
+            .select(&card_sel)
+            .filter_map(|c| self.parse_card(c, page_url))
+            .filter(|m| seen.insert(m.id.clone()))
+            .collect();
+        if found.is_empty() {
+            found = doc
+                .select(&direct_sel)
+                .filter_map(|a| self.parse_card(a, page_url))
+                .filter(|m| seen.insert(m.id.clone()))
+                .collect();
+        }
+        found
+    }
+
+    /// Primary Madara listing route: POST admin-ajax.php `madara_load_more` (page is 0-based).
+    async fn ajax_list(&self, page: u32, order: &str, query: Option<&str>) -> Option<Vec<Manga>> {
+        let mut form: Vec<(&str, String)> = vec![
+            ("action", "madara_load_more".into()),
+            ("page", page.saturating_sub(1).to_string()),
+            ("template", "madara-core/content/content-search".into()),
+            ("vars[s]", query.unwrap_or("").trim().to_string()),
+            ("vars[paged]", "1".into()),
+            ("vars[template]", "search".into()),
+            ("vars[meta_query][0][relation]", "AND".into()),
+            ("vars[meta_query][relation]", "AND".into()),
+            ("vars[post_type]", "wp-manga".into()),
+            ("vars[post_status]", "publish".into()),
+            ("vars[manga_archives_item_layout]", "default".into()),
+        ];
+        match order {
+            "views" => form.extend([("vars[meta_key]", "_wp_manga_views".into()), ("vars[orderby]", "meta_value_num".into()), ("vars[order]", "desc".into())]),
+            "latest" => form.extend([("vars[meta_key]", "_latest_update".into()), ("vars[orderby]", "meta_value_num".into()), ("vars[order]", "desc".into())]),
+            _ => form.push(("vars[orderby]", String::new())),
+        }
+        let url = format!("{}/wp-admin/admin-ajax.php", self.base_url);
+        let resp = self
+            .client
+            .post(&url)
+            .header("Referer", format!("{}/", self.base_url))
+            .header("X-Requested-With", "XMLHttpRequest")
+            .form(&form)
+            .send()
+            .await
+            .ok()?;
+        if !resp.status().is_success() {
+            return None;
+        }
+        let found = self.parse_listing(&resp.text().await.ok()?, &url);
+        (!found.is_empty()).then_some(found)
+    }
+
     async fn fetch_archive(&self, page: u32, order: &str, query: Option<&str>) -> anyhow::Result<MangaPageResult> {
         let p = page.max(1);
+        if let Some(items) = self.ajax_list(p, order, query).await {
+            let has_next_page = items.len() >= 10;
+            return Ok(MangaPageResult { items, has_next_page });
+        }
         let candidates = if let Some(q) = query.filter(|s| !s.trim().is_empty()) {
             let enc = urlencoding::encode(q.trim());
             vec![
@@ -150,38 +216,13 @@ impl MadaraEngine {
             list
         };
 
-        let card_sel = Selector::parse(
-            "div.page-item-detail, .row.c-tabs-item__content, .manga__item, .manga-item, .item-summary, .bsx, .listupd .bs, .box, .page-listing-item, .item-thumb, .col-6, .col-md-2, .col-sm-3, .col-xs-4, article",
-        ).unwrap();
-        let direct_sel = Selector::parse(
-            "a[href*='/serie/'], a[href*='/series/'], a[href*='/manga/'], a[href*='/webtoon/'], a[href*='/comics/'], a[href*='/manhwa/']",
-        ).unwrap();
-
         let mut items = Vec::new();
-        let mut seen = HashSet::new();
         let mut last_err = None;
 
         for u in candidates {
             match self.fetch_html(&u).await {
                 Ok(html) if html.len() > 200 => {
-                    let doc = Html::parse_document(&html);
-                    let mut found = Vec::new();
-                    for card in doc.select(&card_sel) {
-                        if let Some(m) = self.parse_card(card, &u) {
-                            if seen.insert(m.id.clone()) {
-                                found.push(m);
-                            }
-                        }
-                    }
-                    if found.is_empty() {
-                        for a in doc.select(&direct_sel) {
-                            if let Some(m) = self.parse_card(a, &u) {
-                                if seen.insert(m.id.clone()) {
-                                    found.push(m);
-                                }
-                            }
-                        }
-                    }
+                    let found = self.parse_listing(&html, &u);
                     if !found.is_empty() {
                         items = found;
                         break;
@@ -366,5 +407,22 @@ impl Source for MadaraEngine {
             "div.wp-manga-chapter-img img, .reading-content img, .page-break img, .chapter_image img, img.wp-manga-chapter-img",
             &headers,
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const FRAGMENT: &str = r#"<div class="page-item-detail"><div class="item-thumb"><a href="https://x.test/manga/solo-leveling/" title="Solo Leveling"><img data-src="https://x.test/c.jpg"></a></div><div class="item-summary"><h3 class="h5"><a href="https://x.test/manga/solo-leveling/">Solo Leveling</a></h3></div></div>
+    <div class="page-item-detail"><a href="https://x.test/manga/tower/"><img src="https://x.test/t.jpg"></a><h3><a href="https://x.test/manga/tower/">Tower</a></h3></div>"#;
+
+    #[test]
+    fn parses_admin_ajax_fragment() {
+        let e = MadaraEngine::new("T", "T", "https://x.test", "en", 1, vec![], reqwest::Client::new());
+        let items = e.parse_listing(FRAGMENT, "https://x.test/wp-admin/admin-ajax.php");
+        let titles: Vec<_> = items.iter().map(|m| m.title.as_str()).collect();
+        assert_eq!(titles, ["Solo Leveling", "Tower"]);
+        assert_eq!(items[0].id, "https://x.test/manga/solo-leveling/");
     }
 }
