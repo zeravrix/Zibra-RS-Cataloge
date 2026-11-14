@@ -163,6 +163,18 @@ impl LiveSourceRegistry {
         }
     }
 
+    pub fn total_count(&self) -> usize {
+        self.sources.len()
+    }
+
+    pub fn visible_count(&self, nsfw_enabled: bool) -> usize {
+        if nsfw_enabled {
+            self.sources.len()
+        } else {
+            self.sources.iter().filter(|s| !s.is_nsfw()).count()
+        }
+    }
+
     pub fn get(&self, id: &str) -> Option<Arc<dyn Source>> {
         self.source_map.get(id).cloned()
     }
@@ -186,19 +198,29 @@ impl LiveSourceRegistry {
         required_tags: &HashSet<SourceTag>,
         lang_filter: &str,
         search_query: &str,
+        nsfw_enabled: bool,
     ) -> Vec<Arc<dyn Source>> {
         let q = search_query.trim().to_lowercase();
         let mut filtered: Vec<Arc<dyn Source>> = self
             .sources
             .iter()
             .filter(|s| {
+                if !nsfw_enabled && s.is_nsfw() {
+                    return false;
+                }
                 let match_lang = lang_filter == "ALL" || s.language().eq_ignore_ascii_case(lang_filter);
                 let match_query = q.is_empty()
                     || s.name().to_lowercase().contains(&q)
                     || s.id().to_lowercase().contains(&q)
                     || s.tags().iter().any(|t| t.label().to_lowercase().contains(&q));
                 let match_tags = required_tags.is_empty()
-                    || required_tags.iter().all(|req| s.tags().contains(req));
+                    || required_tags.iter().all(|req| {
+                        if *req == SourceTag::Nsfw {
+                            s.is_nsfw()
+                        } else {
+                            s.tags().contains(req)
+                        }
+                    });
                 match_lang && match_query && match_tags
             })
             .cloned()
@@ -237,21 +259,72 @@ impl LiveSourceRegistry {
         page: u32,
         latest: bool,
         query: Option<&str>,
+        nsfw_enabled: bool,
     ) -> anyhow::Result<MangaPageResult> {
         let src = self
             .get(source_id)
             .ok_or_else(|| anyhow::anyhow!("Unknown source {}", source_id))?;
+        if !nsfw_enabled && src.is_nsfw() {
+            anyhow::bail!("18+ NSFW source '{}' is hidden while Disable 18+ / NSFW is active.", src.name());
+        }
         let start = Instant::now();
-        let res = if let Some(q) = query.filter(|s| !s.trim().is_empty()) {
+        let mut res = if let Some(q) = query.filter(|s| !s.trim().is_empty()) {
             src.search(page, q).await
         } else if latest {
             src.latest(page).await
         } else {
             src.popular(page).await
-        };
-        if res.is_ok() {
-            self.record_latency(source_id, start.elapsed().as_millis() as u64);
+        }?;
+        self.record_latency(source_id, start.elapsed().as_millis() as u64);
+        if !nsfw_enabled {
+            res.items.retain(|m| !m.is_nsfw());
         }
-        res
+        Ok(res)
+    }
+
+    pub async fn search_global(
+        &self,
+        query: &str,
+        pinned_ids: &HashSet<String>,
+        nsfw_enabled: bool,
+    ) -> Vec<zibra_core::Manga> {
+        let q = query.trim().to_string();
+        if q.is_empty() {
+            return Vec::new();
+        }
+        let targets: Vec<Arc<dyn Source>> = self
+            .sources
+            .iter()
+            .filter(|s| (nsfw_enabled || !s.is_nsfw()) && (pinned_ids.contains(s.id()) || s.priority_rank() <= 12))
+            .take(16)
+            .cloned()
+            .collect();
+
+        let mut handles = Vec::new();
+        for src in targets {
+            let q_clone = q.clone();
+            handles.push(tokio::spawn(async move {
+                match tokio::time::timeout(Duration::from_secs(7), src.search(1, &q_clone)).await {
+                    Ok(Ok(res)) => res.items,
+                    _ => Vec::new(),
+                }
+            }));
+        }
+
+        let mut combined = Vec::new();
+        let mut seen = HashSet::new();
+        for h in handles {
+            if let Ok(items) = h.await {
+                for m in items {
+                    if !nsfw_enabled && m.is_nsfw() {
+                        continue;
+                    }
+                    if seen.insert(m.id.clone()) {
+                        combined.push(m);
+                    }
+                }
+            }
+        }
+        combined
     }
 }

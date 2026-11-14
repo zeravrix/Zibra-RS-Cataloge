@@ -31,6 +31,43 @@ pub trait Source: Send + Sync {
         format!("https://www.google.com/s2/favicons?domain={}&sz=128", host)
     }
 
+    fn is_nsfw(&self) -> bool {
+        if self.tags().contains(&SourceTag::Nsfw) {
+            return true;
+        }
+        let combined = format!(
+            "{} {} {}",
+            self.id().to_lowercase(),
+            self.name().to_lowercase(),
+            self.base_url().to_lowercase()
+        );
+        const ADULT_KEYWORDS: &[&str] = &[
+            "18+",
+            "+18",
+            "nsfw",
+            "hentai",
+            "adult",
+            "erotica",
+            "smut",
+            "porn",
+            "xxx",
+            "milftoon",
+            "nhentai",
+            "hitomi",
+            "imhentai",
+            "e-hentai",
+            "exhentai",
+            "hentairead",
+            "hentai2read",
+            "hentaifox",
+            "multporn",
+            "8muses",
+            "luscious",
+            "pururin",
+        ];
+        ADULT_KEYWORDS.iter().any(|k| combined.contains(k))
+    }
+
     async fn popular(&self, page: u32) -> anyhow::Result<MangaPageResult>;
     async fn latest(&self, page: u32) -> anyhow::Result<MangaPageResult>;
     async fn search(&self, page: u32, query: &str) -> anyhow::Result<MangaPageResult>;
