@@ -38,7 +38,10 @@ impl LiveSourceRegistry {
             .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
             .build()
             .unwrap_or_default();
+        Self::new_with_client(client)
+    }
 
+    pub fn new_with_client(client: reqwest::Client) -> Self {
         let mut sources: Vec<Arc<dyn Source>> = vec![
             Arc::new(MangaDexSource::new(client.clone())),
             Arc::new(MangaSwatSource::new(client.clone())),
