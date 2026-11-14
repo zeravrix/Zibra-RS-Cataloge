@@ -1,0 +1,370 @@
+use crate::extractor::{
+    extract_best_image_url, extract_chapter_pages, fetch_html_resilient, parse_chapter_number,
+    resolve_url,
+};
+use crate::{MangaPageResult, Source};
+use async_trait::async_trait;
+use scraper::{ElementRef, Html, Selector};
+use std::collections::{HashMap, HashSet};
+use zibra_core::{Chapter, Manga, MangaPage, SourceTag};
+
+pub struct MadaraEngine {
+    id: String,
+    name: String,
+    base_url: String,
+    lang: String,
+    rank: u32,
+    tags: Vec<SourceTag>,
+    client: reqwest::Client,
+    list_path: Option<String>,
+}
+
+impl MadaraEngine {
+    pub fn new(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        base_url: impl Into<String>,
+        lang: impl Into<String>,
+        rank: u32,
+        tags: Vec<SourceTag>,
+        client: reqwest::Client,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            name: name.into(),
+            base_url: base_url.into().trim_end_matches('/').to_string(),
+            lang: lang.into(),
+            rank,
+            tags,
+            client,
+            list_path: None,
+        }
+    }
+
+    pub fn with_list_path(mut self, path: impl Into<String>) -> Self {
+        self.list_path = Some(path.into().trim_matches('/').to_string());
+        self
+    }
+
+    async fn fetch_html(&self, url: &str) -> anyhow::Result<String> {
+        fetch_html_resilient(&self.client, url, Some(&self.base_url)).await
+    }
+
+    fn parse_card(&self, card: ElementRef<'_>, page_url: &str) -> Option<Manga> {
+        let is_anchor = card.value().name() == "a";
+        let link_sel = Selector::parse(
+            "a[href*='/manga/'], a[href*='/series/'], a[href*='/serie/'], a[href*='/comics/'], a[href*='/comic/'], a[href*='/webtoon/'], a[href*='/webtoons/'], a[href*='/manhwa/'], a[href*='/manhua/'], a[href*='/komik/'], a[href*='/titles/'], a[href*='/project/'], .post-title a, .entry-title a, .item-title a, h3 a, h4 a, h5 a, .thumb a, a",
+        ).ok()?;
+        
+        let anchor = if is_anchor && card.value().attr("href").is_some() {
+            card
+        } else {
+            card.select(&link_sel).next()?
+        };
+        let href = anchor.value().attr("href")?;
+        let url = resolve_url(page_url, href)?;
+        let clean_path = url.trim_end_matches('/');
+        if clean_path == self.base_url
+            || clean_path.ends_with("/manga")
+            || clean_path.ends_with("/series")
+            || clean_path.ends_with("/webtoons")
+            || clean_path.ends_with("/comics")
+            || clean_path.ends_with("/manhwa")
+            || clean_path.ends_with("/manhua")
+            || clean_path.contains("/genre/")
+            || clean_path.contains("/genres/")
+            || clean_path.contains("/category/")
+            || clean_path.contains("/tag/")
+            || clean_path.contains("/author/")
+            || clean_path.contains("/user/")
+            || clean_path.contains("/bookmark")
+        {
+            return None;
+        }
+
+        let title_sel = Selector::parse(".post-title, .entry-title, .item-title, .data h3, .tt, h3, h4, h5").ok()?;
+        let title = card
+            .select(&title_sel)
+            .next()
+            .map(|e| e.text().collect::<String>().trim().to_string())
+            .filter(|s| !s.is_empty())
+            .or_else(|| anchor.value().attr("title").map(|s| s.trim().to_string()).filter(|s| !s.is_empty()))
+            .unwrap_or_else(|| anchor.text().collect::<String>().trim().to_string());
+
+        if title.is_empty() {
+            return None;
+        }
+
+        let img_sel = Selector::parse("img").ok()?;
+        let cover_url = card.select(&img_sel).next().and_then(|img| extract_best_image_url(img, page_url));
+
+        let mut manga = Manga::new(url, title, &self.id);
+        manga.cover_url = cover_url;
+        manga.enrich_manhwa_tags();
+        Some(manga)
+    }
+
+    async fn fetch_archive(&self, page: u32, order: &str, query: Option<&str>) -> anyhow::Result<MangaPageResult> {
+        let p = page.max(1);
+        let candidates = if let Some(q) = query.filter(|s| !s.trim().is_empty()) {
+            let enc = urlencoding::encode(q.trim());
+            vec![
+                format!("{}/page/{}/?s={}&post_type=wp-manga", self.base_url, p, enc),
+                format!("{}/?s={}&post_type=wp-manga&paged={}", self.base_url, enc, p),
+                format!("{}/?s={}&page={}", self.base_url, enc, p),
+                format!("{}/?s={}", self.base_url, enc),
+            ]
+        } else {
+            let mut list = Vec::new();
+            if let Some(ref lp) = self.list_path {
+                if p > 1 {
+                    list.push(format!("{}/{}/page/{}/?m_orderby={}", self.base_url, lp, p, order));
+                } else {
+                    list.push(format!("{}/{}/?m_orderby={}", self.base_url, lp, order));
+                }
+            }
+            if p > 1 {
+                list.push(format!("{}/manga/page/{}/?m_orderby={}", self.base_url, p, order));
+                list.push(format!("{}/webtoons/page/{}/?m_orderby={}", self.base_url, p, order));
+                list.push(format!("{}/series/page/{}/?m_orderby={}", self.base_url, p, order));
+                list.push(format!("{}/comics/page/{}/?m_orderby={}", self.base_url, p, order));
+                list.push(format!("{}/manhwa/page/{}/?m_orderby={}", self.base_url, p, order));
+                list.push(format!("{}/page/{}/?s=&post_type=wp-manga&m_orderby={}", self.base_url, p, order));
+                list.push(format!("{}/page/{}/?m_orderby={}", self.base_url, p, order));
+                list.push(format!("{}/page/{}/", self.base_url, p));
+            } else {
+                list.push(format!("{}/manga/?m_orderby={}", self.base_url, order));
+                list.push(format!("{}/webtoons/?m_orderby={}", self.base_url, order));
+                list.push(format!("{}/series/?m_orderby={}", self.base_url, order));
+                list.push(format!("{}/comics/?m_orderby={}", self.base_url, order));
+                list.push(format!("{}/manhwa/?m_orderby={}", self.base_url, order));
+                list.push(format!("{}/webtoons/", self.base_url));
+                list.push(format!("{}/webtoon/", self.base_url));
+                list.push(format!("{}/manga/", self.base_url));
+                list.push(format!("{}/series/", self.base_url));
+                list.push(format!("{}/comics/", self.base_url));
+                list.push(format!("{}/manhwa/", self.base_url));
+                list.push(format!("{}/?m_orderby={}", self.base_url, order));
+                list.push(format!("{}/", self.base_url));
+            }
+            list
+        };
+
+        let card_sel = Selector::parse(
+            "div.page-item-detail, .row.c-tabs-item__content, .manga__item, .manga-item, .item-summary, .bsx, .listupd .bs, .box, .page-listing-item, .item-thumb, .col-6, .col-md-2, .col-sm-3, .col-xs-4, article",
+        ).unwrap();
+        let direct_sel = Selector::parse(
+            "a[href*='/serie/'], a[href*='/series/'], a[href*='/manga/'], a[href*='/webtoon/'], a[href*='/comics/'], a[href*='/manhwa/']",
+        ).unwrap();
+
+        let mut items = Vec::new();
+        let mut seen = HashSet::new();
+        let mut last_err = None;
+
+        for u in candidates {
+            match self.fetch_html(&u).await {
+                Ok(html) if html.len() > 200 => {
+                    let doc = Html::parse_document(&html);
+                    let mut found = Vec::new();
+                    for card in doc.select(&card_sel) {
+                        if let Some(m) = self.parse_card(card, &u) {
+                            if seen.insert(m.id.clone()) {
+                                found.push(m);
+                            }
+                        }
+                    }
+                    if found.is_empty() {
+                        for a in doc.select(&direct_sel) {
+                            if let Some(m) = self.parse_card(a, &u) {
+                                if seen.insert(m.id.clone()) {
+                                    found.push(m);
+                                }
+                            }
+                        }
+                    }
+                    if !found.is_empty() {
+                        items = found;
+                        break;
+                    }
+                }
+                Ok(_) => {}
+                Err(e) => last_err = Some(e),
+            }
+        }
+
+        if items.is_empty() {
+            if let Some(e) = last_err {
+                return Err(e);
+            }
+        }
+
+        let has_next = items.len() >= 10;
+        Ok(MangaPageResult {
+            items,
+            has_next_page: has_next,
+        })
+    }
+
+    fn parse_chapters_from_html(&self, html: &str, manga_id: &str) -> Vec<Chapter> {
+        let doc = Html::parse_document(html);
+        let ch_sel = Selector::parse("li.wp-manga-chapter a, .chapter-item a, .listing-chapters_wrap a, #chapter-list a[href], .version-chap li a").unwrap();
+        let mut list = Vec::new();
+        let mut seen = HashSet::new();
+
+        for link in doc.select(&ch_sel) {
+            if let Some(href) = link.value().attr("href") {
+                if let Some(full_url) = resolve_url(manga_id, href) {
+                    let clean_url = full_url.split("?style=paged").next().unwrap_or(&full_url).to_string();
+                    if clean_url.trim_end_matches('/') == manga_id.trim_end_matches('/') || !seen.insert(clean_url.clone()) {
+                        continue;
+                    }
+                    let title = link.text().collect::<String>().trim().to_string();
+                    let label = if title.is_empty() { "Chapter".to_string() } else { title };
+                    let num = parse_chapter_number(&label);
+                    list.push(Chapter::new(clean_url, manga_id.to_string(), label, num, &self.id));
+                }
+            }
+        }
+        list
+    }
+}
+
+#[async_trait]
+impl Source for MadaraEngine {
+    fn id(&self) -> &str { &self.id }
+    fn name(&self) -> &str { &self.name }
+    fn language(&self) -> &str { &self.lang }
+    fn base_url(&self) -> &str { &self.base_url }
+    fn priority_rank(&self) -> u32 { self.rank }
+    fn tags(&self) -> &[SourceTag] { &self.tags }
+
+    async fn popular(&self, page: u32) -> anyhow::Result<MangaPageResult> {
+        self.fetch_archive(page, "views", None).await
+    }
+
+    async fn latest(&self, page: u32) -> anyhow::Result<MangaPageResult> {
+        self.fetch_archive(page, "latest", None).await
+    }
+
+    async fn search(&self, page: u32, query: &str) -> anyhow::Result<MangaPageResult> {
+        self.fetch_archive(page, "latest", Some(query)).await
+    }
+
+    async fn details(&self, manga: &Manga) -> anyhow::Result<Manga> {
+        let html = self.fetch_html(&manga.id).await?;
+        let doc = Html::parse_document(&html);
+        let title_sel = Selector::parse(".post-title h1, .summary_content h1, h1.entry-title, h1").unwrap();
+        let img_sel = Selector::parse(".summary_image img, .profile-manga img, img").unwrap();
+        let desc_sel = Selector::parse(".description-summary, .summary__content, .summary_content, .description").unwrap();
+        let genre_sel = Selector::parse(".genres-content a, .genres a, .mgen a").unwrap();
+
+        let title = doc
+            .select(&title_sel)
+            .next()
+            .map(|e| e.text().collect::<String>().trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| manga.title.clone());
+
+        let cover = doc
+            .select(&img_sel)
+            .next()
+            .and_then(|img| extract_best_image_url(img, &manga.id))
+            .or_else(|| manga.cover_url.clone());
+
+        let description = doc
+            .select(&desc_sel)
+            .next()
+            .map(|e| e.text().collect::<String>().trim().to_string())
+            .unwrap_or_else(|| manga.description.clone());
+
+        let genres: Vec<String> = doc
+            .select(&genre_sel)
+            .map(|e| e.text().collect::<String>().trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+
+        let mut updated = manga.clone();
+        updated.title = title;
+        updated.cover_url = cover;
+        updated.description = description;
+        if !genres.is_empty() {
+            updated.genres = genres;
+        }
+        updated.enrich_manhwa_tags();
+        Ok(updated)
+    }
+
+    async fn chapters(&self, manga: &Manga) -> anyhow::Result<Vec<Chapter>> {
+        let html = self.fetch_html(&manga.id).await?;
+        let mut chapters = self.parse_chapters_from_html(&html, &manga.id);
+
+        // Fallback 1: Modern Madara POST <manga_url>/ajax/chapters/
+        if chapters.is_empty() {
+            let ajax_url = format!("{}/ajax/chapters/", manga.id.trim_end_matches('/'));
+            if let Ok(resp) = self
+                .client
+                .post(&ajax_url)
+                .header("Referer", &manga.id)
+                .header("X-Requested-With", "XMLHttpRequest")
+                .send()
+                .await
+            {
+                if let Ok(xhr_html) = resp.text().await {
+                    chapters = self.parse_chapters_from_html(&xhr_html, &manga.id);
+                }
+            }
+        }
+
+        // Fallback 2: Classic Madara POST /wp-admin/admin-ajax.php (action=manga_get_chapters&manga=<data-id>)
+        if chapters.is_empty() {
+            let holder_id = {
+                let doc = Html::parse_document(&html);
+                let holder_sel = Selector::parse("div[id^='manga-chapters-holder']").unwrap();
+                doc.select(&holder_sel)
+                    .next()
+                    .and_then(|el| el.value().attr("data-id"))
+                    .map(String::from)
+            };
+            if let Some(data_id) = holder_id {
+                let admin_ajax = format!("{}/wp-admin/admin-ajax.php", self.base_url);
+                let body = format!("action=manga_get_chapters&manga={}", urlencoding::encode(&data_id));
+                if let Ok(resp) = self
+                    .client
+                    .post(&admin_ajax)
+                    .header("Referer", &manga.id)
+                    .header("X-Requested-With", "XMLHttpRequest")
+                    .header("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
+                    .body(body)
+                    .send()
+                    .await
+                {
+                    if let Ok(xhr_html) = resp.text().await {
+                        chapters = self.parse_chapters_from_html(&xhr_html, &manga.id);
+                    }
+                }
+            }
+        }
+
+        Ok(chapters)
+    }
+
+    async fn pages(&self, chapter: &Chapter) -> anyhow::Result<Vec<MangaPage>> {
+        let list_url = if chapter.id.contains("?style=") {
+            chapter.id.clone()
+        } else {
+            format!("{}?style=list", chapter.id.trim_end_matches('/'))
+        };
+        let html = match self.fetch_html(&list_url).await {
+            Ok(h) => h,
+            Err(_) => self.fetch_html(&chapter.id).await?,
+        };
+        let mut headers = HashMap::new();
+        headers.insert("Referer".to_string(), format!("{}/", self.base_url));
+        Ok(extract_chapter_pages(
+            &html,
+            &chapter.id,
+            "div.wp-manga-chapter-img img, .reading-content img, .page-break img, .chapter_image img, img.wp-manga-chapter-img",
+            &headers,
+        ))
+    }
+}

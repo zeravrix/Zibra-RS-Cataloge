@@ -1,0 +1,25 @@
+[package]
+name = "zibra-app"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "zibra"
+path = "src/main.rs"
+
+[dependencies]
+zibra-core = { path = "../zibra-core" }
+zibra-sources = { path = "../zibra-sources" }
+zibra-reader = { path = "../zibra-reader" }
+anyhow.workspace = true
+tokio.workspace = true
+eframe.workspace = true
+egui.workspace = true
+egui_extras.workspace = true
+parking_lot.workspace = true
+dirs.workspace = true
+chrono.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

@@ -1,0 +1,18 @@
+[package]
+name = "zibra-reader"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+zibra-core = { path = "../zibra-core" }
+anyhow.workspace = true
+tokio.workspace = true
+reqwest.workspace = true
+image.workspace = true
+imagesize.workspace = true
+moka.workspace = true
+parking_lot.workspace = true
+sha2.workspace = true
+hex.workspace = true
