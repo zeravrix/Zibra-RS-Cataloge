@@ -1,9 +1,9 @@
-package org.koitharu.kotatsu.parsers.site.madara.en
+package org.zeravrix.parsers.site.madara.en
 
-import org.koitharu.kotatsu.parsers.MangaLoaderContext
-import org.koitharu.kotatsu.parsers.MangaSourceParser
-import org.koitharu.kotatsu.parsers.model.MangaParserSource
-import org.koitharu.kotatsu.parsers.site.madara.MadaraParser
+import org.zeravrix.parsers.MangaLoaderContext
+import org.zeravrix.parsers.MangaSourceParser
+import org.zeravrix.parsers.model.MangaParserSource
+import org.zeravrix.parsers.site.madara.MadaraParser
 
 @MangaSourceParser("TOONILY", "Toonily", "en")
 internal class Toonily(context: MangaLoaderContext) :

@@ -155,7 +155,7 @@ impl ColorTheme {
 
     pub fn description(&self) -> &'static str {
         match self {
-            ColorTheme::Totoro => "Kotatsu default slate indigo",
+            ColorTheme::Totoro => "Zibrax default slate indigo",
             ColorTheme::Monet => "Adaptive material sky blue",
             ColorTheme::Expressive => "Vibrant expressive anime lilac",
             ColorTheme::Miku => "Cyber cyan & teal palette",

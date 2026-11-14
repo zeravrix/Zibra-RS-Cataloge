@@ -1,8 +1,8 @@
 import unittest
 from pathlib import Path
-import extract_kotatsu as e
+import extract_catalog as e
 
-FX = Path(__file__).parent / "fixtures" / "kotatsu"
+FX = Path(__file__).parent / "fixtures" / "sources"
 
 
 class ExtractTest(unittest.TestCase):

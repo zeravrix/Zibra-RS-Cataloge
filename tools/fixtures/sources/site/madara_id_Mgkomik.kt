@@ -1,11 +1,11 @@
-package org.koitharu.kotatsu.parsers.site.madara.id
+package org.zeravrix.parsers.site.madara.id
 
 import okhttp3.Headers
-import org.koitharu.kotatsu.parsers.MangaLoaderContext
-import org.koitharu.kotatsu.parsers.MangaSourceParser
-import org.koitharu.kotatsu.parsers.model.MangaParserSource
-import org.koitharu.kotatsu.parsers.site.madara.MadaraParser
-import org.koitharu.kotatsu.parsers.config.ConfigKey
+import org.zeravrix.parsers.MangaLoaderContext
+import org.zeravrix.parsers.MangaSourceParser
+import org.zeravrix.parsers.model.MangaParserSource
+import org.zeravrix.parsers.site.madara.MadaraParser
+import org.zeravrix.parsers.config.ConfigKey
 import java.util.*
 import kotlin.random.Random
 

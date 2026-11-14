@@ -1,4 +1,4 @@
-//! Data-driven sources: `catalog/sources.json` contains 1,256+ Kotatsu sources
+//! Data-driven sources: `catalog/sources.json` contains 1,250+ sources
 //! dynamically mapped to high-performance pure Rust parser engines.
 use crate::engines::{
     generic_html::GenericHtmlEngine, madara::MadaraEngine, mangathemesia::MangaThemesiaEngine,
@@ -19,8 +19,6 @@ pub struct CatalogRecord {
     pub lang: String,
     pub domain: String,
     pub family: String,
-    #[serde(default)]
-    pub class_name: Option<String>,
     #[serde(default)]
     pub is_broken: bool,
     #[serde(default)]
@@ -76,7 +74,7 @@ pub fn build(
             skipped += 1;
             continue;
         }
-        let id = format!("kotatsu:{}", r.name);
+        let id = format!("zibra:{}", r.name.to_lowercase());
         let url = if r.domain.starts_with("http") {
             r.domain.clone()
         } else {
@@ -130,7 +128,7 @@ mod tests {
         assert!(records.len() > 1000, "Bundled catalog must contain 1000+ sources");
         let (srcs, _) = build(&records, &reqwest::Client::new(), &HashSet::new(), 100);
         assert!(srcs.len() > 1000, "Must build 1000+ sources in pure Rust");
-        assert!(srcs.iter().all(|s| s.id().starts_with("kotatsu:")));
+        assert!(srcs.iter().all(|s| s.id().starts_with("zibra:")));
     }
 
     #[test]
@@ -145,7 +143,7 @@ mod tests {
         let taken: HashSet<String> = ["e.com".to_string()].into();
         let (srcs, skipped) = build(&records, &reqwest::Client::new(), &taken, 100);
         let ids: Vec<_> = srcs.iter().map(|s| s.id().to_string()).collect();
-        assert_eq!(ids, ["kotatsu:A", "kotatsu:C", "kotatsu:D"]);
+        assert_eq!(ids, ["zibra:a", "zibra:c", "zibra:d"]);
         assert_eq!(skipped, 2);
     }
 }

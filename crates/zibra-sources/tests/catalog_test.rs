@@ -18,5 +18,5 @@ fn test_live_source_registry_pure_rust_all_sources() {
     assert!(registry.get("TEAMX").is_some(), "TeamX must exist");
     assert!(registry.get("TOONILY").is_some(), "Toonily must exist");
     assert!(registry.get("ASURASCANS").is_some(), "AsuraScans must exist");
-    assert!(registry.get("kotatsu:COMIC21").is_some() || registry.get("kotatsu:HARIMANGA").is_some(), "Kotatsu catalog sources must exist");
+    assert!(registry.get("zibra:comic21").is_some() || registry.get("zibra:harimanga").is_some(), "Catalog sources must exist");
 }

@@ -1,11 +1,11 @@
-package org.koitharu.kotatsu.parsers.site.mangareader.id
+package org.zeravrix.parsers.site.mangareader.id
 
 import org.jsoup.nodes.Document
-import org.koitharu.kotatsu.parsers.MangaLoaderContext
-import org.koitharu.kotatsu.parsers.MangaSourceParser
-import org.koitharu.kotatsu.parsers.model.*
-import org.koitharu.kotatsu.parsers.site.mangareader.MangaReaderParser
-import org.koitharu.kotatsu.parsers.util.*
+import org.zeravrix.parsers.MangaLoaderContext
+import org.zeravrix.parsers.MangaSourceParser
+import org.zeravrix.parsers.model.*
+import org.zeravrix.parsers.site.mangareader.MangaReaderParser
+import org.zeravrix.parsers.util.*
 import java.text.SimpleDateFormat
 import java.util.EnumSet
 

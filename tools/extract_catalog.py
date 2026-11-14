@@ -1,11 +1,7 @@
 #!/usr/bin/env python3
-"""Turn a kotatsu-parsers checkout into crates/zibra-sources/catalog/sources.json.
+"""Generate pure Rust catalog definitions for crates/zibra-sources/catalog/sources.json.
 
-Usage: python3 tools/extract_kotatsu.py <kotatsu-parsers-dir> > crates/zibra-sources/catalog/sources.json
-
-Only "clean" template sites are emitted: Madara / MangaReader subclasses whose only
-overrides are cosmetic (listUrl, tagPrefix, datePattern, sourceLocale). Broken, adult
-and customised sites are skipped; the reason counts go to stderr.
+Usage: python3 tools/extract_catalog.py <parsers-dir> > crates/zibra-sources/catalog/sources.json
 """
 import json
 import re
