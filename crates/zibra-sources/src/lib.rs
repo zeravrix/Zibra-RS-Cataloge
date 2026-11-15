@@ -23,14 +23,6 @@ pub trait Source: Send + Sync {
     fn priority_rank(&self) -> u32;
     fn tags(&self) -> &[SourceTag];
 
-    fn icon_url(&self) -> String {
-        let host = url::Url::parse(self.base_url())
-            .ok()
-            .and_then(|u| u.host_str().map(String::from))
-            .unwrap_or_else(|| format!("{}.com", self.name().to_lowercase().replace(' ', "")));
-        format!("https://www.google.com/s2/favicons?domain={}&sz=128", host)
-    }
-
     fn is_nsfw(&self) -> bool {
         if self.tags().contains(&SourceTag::Nsfw) {
             return true;
@@ -64,8 +56,30 @@ pub trait Source: Send + Sync {
             "8muses",
             "luscious",
             "pururin",
+            "tsumino",
+            "simply-hentai",
+            "asmhentai",
+            "wnacg",
+            "18comic",
+            "jmcomic",
+            "manhwa18",
+            "manga18",
+            "webtoon18",
+            "hentaidex",
+            "doujins",
+            "allporncomic",
+            "myreadingmanga",
+            "yaoimanga",
         ];
         ADULT_KEYWORDS.iter().any(|k| combined.contains(k))
+    }
+
+    fn icon_url(&self) -> String {
+        let host = url::Url::parse(self.base_url())
+            .ok()
+            .and_then(|u| u.host_str().map(String::from))
+            .unwrap_or_else(|| format!("{}.com", self.name().to_lowercase().replace(' ', "")));
+        format!("https://www.google.com/s2/favicons?domain={}&sz=128", host)
     }
 
     async fn popular(&self, page: u32) -> anyhow::Result<MangaPageResult>;

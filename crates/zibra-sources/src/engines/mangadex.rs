@@ -51,7 +51,7 @@ impl MangaDexSource {
             }
         }
 
-        let cover_url = cover_file.map(|f| format!("https://uploads.mangadex.org/covers/{}/{}.512.jpg", id, f));
+        let cover_url = cover_file.map(|f| format!("https://uploads.mangadex.org/covers/{}/{}", id, f));
         let mut m = Manga::new(id, title, "MANGADEX");
         m.cover_url = cover_url;
         m.description = desc;
@@ -85,7 +85,7 @@ impl MangaDexSource {
             .map(|arr| arr.iter().filter_map(|v| self.parse_manga_data(v)).collect())
             .unwrap_or_default();
         Ok(MangaPageResult {
-            has_next_page: items.len() >= 20,
+            has_next_page: !items.is_empty(),
             items,
         })
     }

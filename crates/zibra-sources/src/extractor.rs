@@ -21,6 +21,21 @@ static THUMB_SIZE_REGEX: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"[-_]\d{2,5}x\d{2,5}(\.[a-zA-Z0-9]{2,5})").unwrap()
 });
 
+/// The whole host is unusable (down, or behind a Cloudflare challenge); trying other paths on it only burns time.
+#[derive(Debug)]
+pub struct HostUnavailable(pub String);
+
+impl std::fmt::Display for HostUnavailable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+impl std::error::Error for HostUnavailable {}
+
+pub fn is_host_unavailable(e: &anyhow::Error) -> bool {
+    e.downcast_ref::<HostUnavailable>().is_some()
+}
+
 pub fn parse_chapter_number(text: &str) -> Option<f32> {
     CHAPTER_NUMBER_REGEX
         .captures(text)
@@ -31,13 +46,48 @@ pub fn parse_chapter_number(text: &str) -> Option<f32> {
 pub fn normalize_cover_url(raw: &str) -> String {
     let cleaned_ws: String = raw.trim().chars().filter(|c| !c.is_control()).collect();
     let cleaned = THUMB_SIZE_REGEX.replace_all(&cleaned_ws, "$1");
-    cleaned
+    let mut s = cleaned
         .replace("/thumb/", "/")
         .replace("/thumbs/", "/")
-        .replace(" ", "%20")
+        .replace(" ", "%20");
+    // Strip thumbnail resizing queries that downgrade covers to blurry 150px thumbnails
+    if let Some(pos) = s.find("?resize=") {
+        s.truncate(pos);
+    } else if let Some(pos) = s.find("?w=") {
+        s.truncate(pos);
+    } else if let Some(pos) = s.find("?fit=") {
+        s.truncate(pos);
+    } else if let Some(pos) = s.find("?zoom=") {
+        s.truncate(pos);
+    }
+    s
 }
 
 pub fn extract_best_image_url(el: ElementRef<'_>, base_url: &str) -> Option<String> {
+    // Check srcset first for maximum resolution cover
+    if let Some(srcset) = el.value().attr("srcset").or_else(|| el.value().attr("data-srcset")) {
+        let best = srcset
+            .split(',')
+            .filter_map(|token| {
+                let mut parts = token.trim().split_whitespace();
+                let raw_url = parts.next()?;
+                let score = parts
+                    .next()
+                    .and_then(|s| s.trim_end_matches('w').trim_end_matches('x').parse::<f32>().ok())
+                    .unwrap_or(1.0);
+                let resolved = resolve_url(base_url, raw_url)?;
+                if is_junk_asset(&resolved) {
+                    return None;
+                }
+                Some((resolved, score))
+            })
+            .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+            .map(|(u, _)| normalize_cover_url(&u));
+        if best.is_some() {
+            return best;
+        }
+    }
+
     let attrs = [
         "data-original",
         "data-full",
@@ -68,29 +118,6 @@ pub fn extract_best_image_url(el: ElementRef<'_>, base_url: &str) -> Option<Stri
                     return Some(normalize_cover_url(&resolved));
                 }
             }
-        }
-    }
-
-    if let Some(srcset) = el.value().attr("srcset").or_else(|| el.value().attr("data-srcset")) {
-        let best = srcset
-            .split(',')
-            .filter_map(|token| {
-                let mut parts = token.trim().split_whitespace();
-                let raw_url = parts.next()?;
-                let score = parts
-                    .next()
-                    .and_then(|s| s.trim_end_matches('w').trim_end_matches('x').parse::<f32>().ok())
-                    .unwrap_or(1.0);
-                let resolved = resolve_url(base_url, raw_url)?;
-                if is_junk_asset(&resolved) {
-                    return None;
-                }
-                Some((resolved, score))
-            })
-            .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
-            .map(|(u, _)| normalize_cover_url(&u));
-        if best.is_some() {
-            return best;
         }
     }
 
@@ -272,8 +299,16 @@ pub async fn fetch_html_resilient(
                     }
                 }
             }
+            if status.as_u16() == 403 {
+                return Err(HostUnavailable("Cloudflare / Bot Challenge (HTTP 403). Use the light browser solver to sync cookies.".into()).into());
+            } else if status.as_u16() == 404 {
+                anyhow::bail!("HTTP 404 Not Found (Endpoint does not exist on this source)");
+            } else if status.as_u16() == 503 {
+                return Err(HostUnavailable("HTTP 503 Service Unavailable (Source server down or under heavy load)".into()).into());
+            }
             anyhow::bail!("HTTP {}", status);
         }
+        Err(e) if e.is_connect() || e.is_timeout() => Err(HostUnavailable(format!("{url}: {e}")).into()),
         Err(e) => Err(e.into()),
     }
 }

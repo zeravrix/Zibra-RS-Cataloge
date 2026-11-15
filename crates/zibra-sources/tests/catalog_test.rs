@@ -6,8 +6,8 @@ fn test_live_source_registry_pure_rust_all_sources() {
     let total = registry.all_sources().len();
     println!("Total pure Rust sources registered: {}", total);
     assert!(
-        total >= 1000,
-        "LiveSourceRegistry must contain at least 1,000 pure Rust sources, got {}",
+        total >= 800,
+        "LiveSourceRegistry must contain at least 800 pure Rust sources, got {}",
         total
     );
 
@@ -18,5 +18,11 @@ fn test_live_source_registry_pure_rust_all_sources() {
     assert!(registry.get("TEAMX").is_some(), "TeamX must exist");
     assert!(registry.get("TOONILY").is_some(), "Toonily must exist");
     assert!(registry.get("ASURASCANS").is_some(), "AsuraScans must exist");
-    assert!(registry.get("zibra:comic21").is_some() || registry.get("zibra:harimanga").is_some(), "Catalog sources must exist");
+    assert!(registry.get("zibra:manhwahub").is_some(), "Catalog sources must exist");
+}
+
+#[test]
+fn broken_catalog_sources_are_not_registered() {
+    let registry = LiveSourceRegistry::new();
+    assert!(registry.get("zibra:comic21").is_none(), "COMIC21 is flagged is_broken");
 }

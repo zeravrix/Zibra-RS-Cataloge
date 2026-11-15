@@ -1,12 +1,19 @@
 use crate::extractor::{
-    extract_best_image_url, extract_chapter_pages, fetch_html_resilient, parse_chapter_number,
+    extract_best_image_url, extract_chapter_pages, fetch_html_resilient, is_host_unavailable, parse_chapter_number,
     resolve_url,
 };
 use crate::{MangaPageResult, Source};
 use async_trait::async_trait;
 use scraper::{ElementRef, Html, Selector};
 use std::collections::{HashMap, HashSet};
+use once_cell::sync::Lazy;
 use zibra_core::{Chapter, Manga, MangaPage, SourceTag};
+
+// Compiled once: parse_card runs for every card of every listing page.
+static LINK_SEL: Lazy<Selector> = Lazy::new(|| Selector::parse("a[href*='/manga/'], a[href*='/series/'], a[href*='/serie/'], a[href*='/comics/'], a[href*='/comic/'], a[href*='/webtoon/'], a[href*='/webtoons/'], a[href*='/manhwa/'], a[href*='/manhua/'], a[href*='/komik/'], a[href*='/titles/'], a[href*='/project/'], .post-title a, .entry-title a, .item-title a, h3 a, h4 a, h5 a, .thumb a, a").unwrap());
+static TITLE_SEL: Lazy<Selector> =
+    Lazy::new(|| Selector::parse(".post-title, .entry-title, .item-title, .data h3, .tt, h3, h4, h5").unwrap());
+static IMG_SEL: Lazy<Selector> = Lazy::new(|| Selector::parse("img").unwrap());
 
 pub struct MadaraEngine {
     id: String,
@@ -52,14 +59,12 @@ impl MadaraEngine {
 
     fn parse_card(&self, card: ElementRef<'_>, page_url: &str) -> Option<Manga> {
         let is_anchor = card.value().name() == "a";
-        let link_sel = Selector::parse(
-            "a[href*='/manga/'], a[href*='/series/'], a[href*='/serie/'], a[href*='/comics/'], a[href*='/comic/'], a[href*='/webtoon/'], a[href*='/webtoons/'], a[href*='/manhwa/'], a[href*='/manhua/'], a[href*='/komik/'], a[href*='/titles/'], a[href*='/project/'], .post-title a, .entry-title a, .item-title a, h3 a, h4 a, h5 a, .thumb a, a",
-        ).ok()?;
+        let link_sel = &*LINK_SEL;
         
         let anchor = if is_anchor && card.value().attr("href").is_some() {
             card
         } else {
-            card.select(&link_sel).next()?
+            card.select(link_sel).next()?
         };
         let href = anchor.value().attr("href")?;
         let url = resolve_url(page_url, href)?;
@@ -82,9 +87,9 @@ impl MadaraEngine {
             return None;
         }
 
-        let title_sel = Selector::parse(".post-title, .entry-title, .item-title, .data h3, .tt, h3, h4, h5").ok()?;
+        let title_sel = &*TITLE_SEL;
         let title = card
-            .select(&title_sel)
+            .select(title_sel)
             .next()
             .map(|e| e.text().collect::<String>().trim().to_string())
             .filter(|s| !s.is_empty())
@@ -95,8 +100,8 @@ impl MadaraEngine {
             return None;
         }
 
-        let img_sel = Selector::parse("img").ok()?;
-        let cover_url = card.select(&img_sel).next().and_then(|img| extract_best_image_url(img, page_url));
+        let img_sel = &*IMG_SEL;
+        let cover_url = card.select(img_sel).next().and_then(|img| extract_best_image_url(img, page_url));
 
         let mut manga = Manga::new(url, title, &self.id);
         manga.cover_url = cover_url;
@@ -130,7 +135,7 @@ impl MadaraEngine {
     }
 
     /// Primary Madara listing route: POST admin-ajax.php `madara_load_more` (page is 0-based).
-    async fn ajax_list(&self, page: u32, order: &str, query: Option<&str>) -> Option<Vec<Manga>> {
+    async fn ajax_list(&self, page: u32, order: &str, query: Option<&str>) -> anyhow::Result<Option<Vec<Manga>>> {
         let mut form: Vec<(&str, String)> = vec![
             ("action", "madara_load_more".into()),
             ("page", page.saturating_sub(1).to_string()),
@@ -150,26 +155,30 @@ impl MadaraEngine {
             _ => form.push(("vars[orderby]", String::new())),
         }
         let url = format!("{}/wp-admin/admin-ajax.php", self.base_url);
-        let resp = self
+        let sent = self
             .client
             .post(&url)
             .header("Referer", format!("{}/", self.base_url))
             .header("X-Requested-With", "XMLHttpRequest")
             .form(&form)
             .send()
-            .await
-            .ok()?;
-        if !resp.status().is_success() {
-            return None;
-        }
-        let found = self.parse_listing(&resp.text().await.ok()?, &url);
-        (!found.is_empty()).then_some(found)
+            .await;
+        let resp = match sent {
+            Ok(r) if r.status().is_success() => r,
+            Err(e) if e.is_connect() || e.is_timeout() => {
+                return Err(crate::extractor::HostUnavailable(format!("{url}: {e}")).into())
+            }
+            _ => return Ok(None),
+        };
+        let Ok(body) = resp.text().await else { return Ok(None) };
+        let found = self.parse_listing(&body, &url);
+        Ok((!found.is_empty()).then_some(found))
     }
 
     async fn fetch_archive(&self, page: u32, order: &str, query: Option<&str>) -> anyhow::Result<MangaPageResult> {
         let p = page.max(1);
-        if let Some(items) = self.ajax_list(p, order, query).await {
-            let has_next_page = items.len() >= 10;
+        if let Some(items) = self.ajax_list(p, order, query).await? {
+            let has_next_page = !items.is_empty();
             return Ok(MangaPageResult { items, has_next_page });
         }
         let candidates = if let Some(q) = query.filter(|s| !s.trim().is_empty()) {
@@ -229,17 +238,34 @@ impl MadaraEngine {
                     }
                 }
                 Ok(_) => {}
+                Err(e) if is_host_unavailable(&e) => return Err(e),
                 Err(e) => last_err = Some(e),
             }
         }
 
         if items.is_empty() {
+            // Auto fallback: if latest returned 0, try popular/views
+            if query.is_none() && order == "latest" {
+                if let Ok(Some(fallback_items)) = self.ajax_list(p, "views", None).await {
+                    if !fallback_items.is_empty() {
+                        return Ok(MangaPageResult { items: fallback_items, has_next_page: true });
+                    }
+                }
+            } else if query.is_none() && order == "views" {
+                if let Ok(Some(fallback_items)) = self.ajax_list(p, "latest", None).await {
+                    if !fallback_items.is_empty() {
+                        return Ok(MangaPageResult { items: fallback_items, has_next_page: true });
+                    }
+                }
+            }
+
             if let Some(e) = last_err {
                 return Err(e);
             }
+            anyhow::bail!("0 titles matched selectors on {} (Site layout or endpoint changed)", self.name);
         }
 
-        let has_next = items.len() >= 10;
+        let has_next = !items.is_empty();
         Ok(MangaPageResult {
             items,
             has_next_page: has_next,
@@ -295,7 +321,7 @@ impl Source for MadaraEngine {
         let html = self.fetch_html(&manga.id).await?;
         let doc = Html::parse_document(&html);
         let title_sel = Selector::parse(".post-title h1, .summary_content h1, h1.entry-title, h1").unwrap();
-        let img_sel = Selector::parse(".summary_image img, .profile-manga img, img").unwrap();
+        let img_sel = Selector::parse(".summary_image img, .profile-manga img, .item-thumb img, .post-thumb img, .featured-image img").unwrap();
         let desc_sel = Selector::parse(".description-summary, .summary__content, .summary_content, .description").unwrap();
         let genre_sel = Selector::parse(".genres-content a, .genres a, .mgen a").unwrap();
 
@@ -310,6 +336,7 @@ impl Source for MadaraEngine {
             .select(&img_sel)
             .next()
             .and_then(|img| extract_best_image_url(img, &manga.id))
+            .filter(|c| !c.is_empty() && !c.to_lowercase().contains("logo") && !c.to_lowercase().contains("favicon"))
             .or_else(|| manga.cover_url.clone());
 
         let description = doc
@@ -416,6 +443,15 @@ mod tests {
 
     const FRAGMENT: &str = r#"<div class="page-item-detail"><div class="item-thumb"><a href="https://x.test/manga/solo-leveling/" title="Solo Leveling"><img data-src="https://x.test/c.jpg"></a></div><div class="item-summary"><h3 class="h5"><a href="https://x.test/manga/solo-leveling/">Solo Leveling</a></h3></div></div>
     <div class="page-item-detail"><a href="https://x.test/manga/tower/"><img src="https://x.test/t.jpg"></a><h3><a href="https://x.test/manga/tower/">Tower</a></h3></div>"#;
+
+    #[tokio::test]
+    async fn dead_host_fails_fast_instead_of_walking_every_path() {
+        let e = MadaraEngine::new("T", "T", "http://127.0.0.1:1", "en", 1, vec![], reqwest::Client::new());
+        let t = std::time::Instant::now();
+        let err = e.popular(1).await.unwrap_err();
+        assert!(crate::extractor::is_host_unavailable(&err), "{err}");
+        assert!(t.elapsed().as_secs() < 3);
+    }
 
     #[test]
     fn parses_admin_ajax_fragment() {

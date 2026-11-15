@@ -55,7 +55,8 @@ fn lang_tag(lang: &str) -> SourceTag {
     }
 }
 
-/// Build engines for every record. Returns (sources, skipped count).
+/// Build engines for every working record (empty domains, `is_broken` and duplicate hosts are skipped).
+/// Returns (sources, skipped count).
 /// `taken_hosts` are hosts already registered by hand-written sources; they win.
 pub fn build(
     records: &[CatalogRecord],
@@ -67,7 +68,7 @@ pub fn build(
     let mut out: Vec<Arc<dyn Source>> = Vec::new();
     let mut skipped = 0;
     for r in records {
-        if r.domain.is_empty() {
+        if r.domain.is_empty() || r.is_broken {
             skipped += 1;
             continue;
         }
@@ -129,8 +130,18 @@ mod tests {
         let records = parse(BUNDLED).unwrap();
         assert!(records.len() > 1000, "Bundled catalog must contain 1000+ sources");
         let (srcs, _) = build(&records, &reqwest::Client::new(), &HashSet::new(), 100);
-        assert!(srcs.len() > 1000, "Must build 1000+ sources in pure Rust");
+        assert!(srcs.len() > 800, "Must build 800+ working sources in pure Rust");
         assert!(srcs.iter().all(|s| s.id().starts_with("zibra:")));
+    }
+
+    #[test]
+    fn build_skips_broken_sources() {
+        let records = rec(r#"[
+            {"name":"A","title":"A","lang":"en","domain":"a.com","family":"madara","is_broken":true},
+            {"name":"B","title":"B","lang":"en","domain":"b.com","family":"madara"}
+        ]"#);
+        let (srcs, skipped) = build(&records, &reqwest::Client::new(), &HashSet::new(), 100);
+        assert_eq!((srcs.len(), skipped), (1, 1));
     }
 
     #[test]

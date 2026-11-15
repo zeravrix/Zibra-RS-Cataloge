@@ -77,7 +77,7 @@ impl AzoraSource {
             .unwrap_or_default();
         let items: Vec<Manga> = arr.iter().filter_map(|v| self.parse_manga(v)).collect();
         Ok(MangaPageResult {
-            has_next_page: items.len() >= 18,
+            has_next_page: !items.is_empty(),
             items,
         })
     }

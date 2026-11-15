@@ -89,7 +89,7 @@ impl Source for TeamXSource {
         let html = self.fetch_html(&url).await?;
         let items = self.parse_cards(&html, "div.listupd div.bsx, div.bsx", &url);
         Ok(MangaPageResult {
-            has_next_page: items.len() >= 10,
+            has_next_page: !items.is_empty(),
             items,
         })
     }
@@ -100,7 +100,7 @@ impl Source for TeamXSource {
         let html = self.fetch_html(&url).await?;
         let items = self.parse_cards(&html, "div.last-chapter div.box, div.bsx", &url);
         Ok(MangaPageResult {
-            has_next_page: items.len() >= 10,
+            has_next_page: !items.is_empty(),
             items,
         })
     }
@@ -120,7 +120,7 @@ impl Source for TeamXSource {
         let doc = Html::parse_document(&html);
         let title_sel = Selector::parse("div.author-info-title h1, h1").unwrap();
         let desc_sel = Selector::parse("div.review-content").unwrap();
-        let img_sel = Selector::parse("div.text-right img, .poster img, img").unwrap();
+        let img_sel = Selector::parse("div.text-right img, .poster img, .series-thumb img").unwrap();
 
         let mut updated = manga.clone();
         if let Some(t) = doc.select(&title_sel).next() {
@@ -134,7 +134,9 @@ impl Source for TeamXSource {
         }
         if let Some(i) = doc.select(&img_sel).next() {
             if let Some(c) = extract_best_image_url(i, &manga.id) {
-                updated.cover_url = Some(c);
+                if !c.is_empty() && !c.to_lowercase().contains("logo") && !c.to_lowercase().contains("favicon") {
+                    updated.cover_url = Some(c);
+                }
             }
         }
         Ok(updated)

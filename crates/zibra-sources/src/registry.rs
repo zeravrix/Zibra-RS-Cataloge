@@ -33,8 +33,11 @@ impl Default for LiveSourceRegistry {
 impl LiveSourceRegistry {
     pub fn new() -> Self {
         let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(25))
-            .connect_timeout(Duration::from_secs(8))
+            .timeout(Duration::from_secs(20))
+            .connect_timeout(Duration::from_secs(6))
+            .tcp_nodelay(true)
+            .pool_idle_timeout(Duration::from_secs(90))
+            .pool_max_idle_per_host(10)
             .cookie_store(true)
             .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
             .build()
@@ -300,13 +303,21 @@ impl LiveSourceRegistry {
         if q.is_empty() {
             return Vec::new();
         }
-        let targets: Vec<Arc<dyn Source>> = self
-            .sources
-            .iter()
-            .filter(|s| (nsfw_enabled || !s.is_nsfw()) && (pinned_ids.contains(s.id()) || s.priority_rank() <= 12))
-            .take(16)
-            .cloned()
-            .collect();
+        let targets: Vec<Arc<dyn Source>> = if !pinned_ids.is_empty() {
+            self.sources
+                .iter()
+                .filter(|s| (nsfw_enabled || !s.is_nsfw()) && pinned_ids.contains(s.id()))
+                .take(24)
+                .cloned()
+                .collect()
+        } else {
+            self.sources
+                .iter()
+                .filter(|s| (nsfw_enabled || !s.is_nsfw()) && s.priority_rank() <= 12)
+                .take(16)
+                .cloned()
+                .collect()
+        };
 
         let mut handles = Vec::new();
         for src in targets {

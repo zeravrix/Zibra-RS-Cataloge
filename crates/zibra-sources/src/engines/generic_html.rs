@@ -1,12 +1,19 @@
 use crate::extractor::{
-    extract_best_image_url, extract_chapter_pages, fetch_html_resilient, parse_chapter_number,
+    extract_best_image_url, extract_chapter_pages, fetch_html_resilient, is_host_unavailable, parse_chapter_number,
     resolve_url,
 };
 use crate::{MangaPageResult, Source};
 use async_trait::async_trait;
 use scraper::{ElementRef, Html, Selector};
 use std::collections::{HashMap, HashSet};
+use once_cell::sync::Lazy;
 use zibra_core::{Chapter, Manga, MangaPage, SourceTag};
+
+// Compiled once: parse_generic_card runs per card (and per anchor inside it).
+static A_SEL: Lazy<Selector> = Lazy::new(|| Selector::parse("a[href]").unwrap());
+static IMG_SEL: Lazy<Selector> = Lazy::new(|| Selector::parse("img").unwrap());
+static TITLE_SEL: Lazy<Selector> =
+    Lazy::new(|| Selector::parse(".post-title, .entry-title, .item-title, .tt, h1, h2, h3, h4").unwrap());
 
 pub struct GenericHtmlEngine {
     id: String,
@@ -48,19 +55,18 @@ impl GenericHtmlEngine {
         let link = if is_anchor && card.value().attr("href").is_some() {
             Some(card)
         } else {
-            let a_sel = Selector::parse("a[href]").ok()?;
+            let a_sel = &*A_SEL;
             let mut best_anchor = None;
             let mut best_score = -1i32;
 
-            for candidate in card.select(&a_sel) {
+            for candidate in card.select(a_sel) {
                 let Some(href) = candidate.value().attr("href") else { continue };
                 let lower = href.to_ascii_lowercase();
                 if lower.contains("javascript:") || lower.contains('#') {
                     continue;
                 }
-                let img_sel = Selector::parse("img").ok()?;
                 let mut score = 0;
-                if candidate.select(&img_sel).next().is_some() {
+                if candidate.select(&IMG_SEL).next().is_some() {
                     score += 5;
                 }
                 if lower.contains("/manga/")
@@ -104,9 +110,9 @@ impl GenericHtmlEngine {
             return None;
         }
 
-        let title_sel = Selector::parse(".post-title, .entry-title, .item-title, .tt, h1, h2, h3, h4").ok()?;
+        let title_sel = &*TITLE_SEL;
         let title = card
-            .select(&title_sel)
+            .select(title_sel)
             .next()
             .map(|e| e.text().collect::<String>().trim().to_string())
             .filter(|s| !s.is_empty())
@@ -127,9 +133,8 @@ impl GenericHtmlEngine {
             return None;
         }
 
-        let img_sel = Selector::parse("img").ok()?;
         let cover_url = card
-            .select(&img_sel)
+            .select(&IMG_SEL)
             .next()
             .and_then(|img| extract_best_image_url(img, page_url));
 
@@ -225,6 +230,7 @@ impl GenericHtmlEngine {
                     }
                 }
                 Ok(_) => {}
+                Err(e) if is_host_unavailable(&e) => return Err(e),
                 Err(e) => last_err = Some(e),
             }
         }
@@ -236,7 +242,7 @@ impl GenericHtmlEngine {
         }
 
         Ok(MangaPageResult {
-            has_next_page: items.len() >= 10,
+            has_next_page: !items.is_empty(),
             items,
         })
     }
@@ -271,7 +277,7 @@ impl Source for GenericHtmlEngine {
             ".description-summary, .summary__content, .entry-content[itemprop=description], .description, #noidungm, .panel-story-info-description, .post-content",
         )
         .unwrap();
-        let img_sel = Selector::parse(".summary_image img, .thumb img, .info-image img, .manga-thumb img, .cover img, img").unwrap();
+        let img_sel = Selector::parse(".summary_image img, .thumb img, .info-image img, .manga-thumb img, .cover img, .poster img").unwrap();
         let genre_sel = Selector::parse(".genres-content a, .mgen a, a[href*='genre'], .genre a").unwrap();
 
         let mut updated = manga.clone();
@@ -289,7 +295,9 @@ impl Source for GenericHtmlEngine {
         }
         if let Some(img) = doc.select(&img_sel).next() {
             if let Some(cov) = extract_best_image_url(img, &manga.id) {
-                updated.cover_url = Some(cov);
+                if !cov.is_empty() && !cov.to_lowercase().contains("logo") && !cov.to_lowercase().contains("favicon") {
+                    updated.cover_url = Some(cov);
+                }
             }
         }
         let genres: Vec<String> = doc
