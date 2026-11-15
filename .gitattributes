@@ -1,0 +1,2 @@
+tools/fixtures/** linguist-vendored
+*.kt linguist-vendored
