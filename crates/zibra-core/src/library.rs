@@ -88,7 +88,12 @@ impl LibraryStore {
                  url TEXT,
                  is_locked INTEGER NOT NULL DEFAULT 0,
                  PRIMARY KEY (manga_id, chapter_id)
-             );",
+             );
+
+             CREATE INDEX IF NOT EXISTS idx_history_last_accessed ON history_manga(last_accessed DESC);
+             CREATE INDEX IF NOT EXISTS idx_library_added_at ON library_manga(added_at DESC);
+             CREATE INDEX IF NOT EXISTS idx_reading_progress_manga ON reading_progress(manga_id);
+             CREATE INDEX IF NOT EXISTS idx_chapter_progress_manga ON chapter_progress(manga_id);",
         )?;
 
         let store = Self {
@@ -96,12 +101,16 @@ impl LibraryStore {
             conn: Arc::new(Mutex::new(conn)),
         };
 
-        let _ = store.import_legacy_properties(root);
-        if let Some(home) = dirs::home_dir() {
-            let legacy_zeravrix = home.join(".zeravrix");
-            if legacy_zeravrix.is_dir() && legacy_zeravrix != root {
-                let _ = store.import_legacy_properties(&legacy_zeravrix);
+        let marker = root.join(".legacy_imported");
+        if !marker.exists() {
+            let _ = store.import_legacy_properties(root);
+            if let Some(home) = dirs::home_dir() {
+                let legacy_zeravrix = home.join(".zeravrix");
+                if legacy_zeravrix.is_dir() && legacy_zeravrix != root {
+                    let _ = store.import_legacy_properties(&legacy_zeravrix);
+                }
             }
+            let _ = fs::write(&marker, b"1");
         }
         Ok(store)
     }
@@ -203,12 +212,59 @@ impl LibraryStore {
     pub fn remove_favorite(&self, manga_id: &str) -> anyhow::Result<()> {
         let conn = self.conn.lock();
         conn.execute("DELETE FROM library_manga WHERE id = ?1", params![manga_id])?;
+        drop(conn);
+        self.cleanup_legacy_file("library", manga_id);
         Ok(())
     }
 
     pub fn remove_history(&self, manga_id: &str) -> anyhow::Result<()> {
         let conn = self.conn.lock();
         conn.execute("DELETE FROM history_manga WHERE id = ?1", params![manga_id])?;
+        conn.execute("DELETE FROM reading_progress WHERE manga_id = ?1", params![manga_id])?;
+        conn.execute("DELETE FROM chapter_progress WHERE manga_id = ?1", params![manga_id])?;
+        conn.execute("DELETE FROM cached_chapters WHERE manga_id = ?1", params![manga_id])?;
+        drop(conn);
+        self.cleanup_legacy_file("history", manga_id);
+        Ok(())
+    }
+
+    fn cleanup_legacy_file(&self, sub: &str, manga_id: &str) {
+        let mut target_dirs = vec![self.root.join(sub)];
+        if let Some(home) = dirs::home_dir() {
+            target_dirs.push(home.join(".zeravrix").join(sub));
+            target_dirs.push(home.join(".zeravrix").join("progress"));
+        }
+        for dir in target_dirs {
+            if !dir.is_dir() {
+                continue;
+            }
+            if let Ok(entries) = fs::read_dir(&dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.extension().and_then(|e| e.to_str()) == Some("properties") {
+                        if let Ok(content) = fs::read_to_string(&path) {
+                            if content.contains(manga_id)
+                                || path.file_stem().and_then(|s| s.to_str()) == Some(manga_id)
+                            {
+                                let _ = fs::remove_file(&path);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn set_manga_status(&self, manga_id: &str, status: &str) -> anyhow::Result<()> {
+        let conn = self.conn.lock();
+        let _ = conn.execute(
+            "UPDATE library_manga SET status = ?1 WHERE id = ?2",
+            params![status, manga_id],
+        );
+        let _ = conn.execute(
+            "UPDATE history_manga SET status = ?1 WHERE id = ?2",
+            params![status, manga_id],
+        );
         Ok(())
     }
 
@@ -231,7 +287,14 @@ impl LibraryStore {
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
              ON CONFLICT(id) DO UPDATE SET
                  title = excluded.title,
-                 cover_url = COALESCE(excluded.cover_url, history_manga.cover_url),
+                 cover_url = CASE 
+                     WHEN excluded.cover_url IS NOT NULL 
+                          AND excluded.cover_url != '' 
+                          AND excluded.cover_url NOT LIKE '%logo%' 
+                          AND excluded.cover_url NOT LIKE '%favicon%' 
+                     THEN excluded.cover_url 
+                     ELSE COALESCE(history_manga.cover_url, excluded.cover_url)
+                 END,
                  description = CASE WHEN excluded.description != '' THEN excluded.description ELSE history_manga.description END,
                  author = COALESCE(excluded.author, history_manga.author),
                  status = COALESCE(excluded.status, history_manga.status),
