@@ -1480,7 +1480,7 @@
     "lang": "ar",
     "domain": "swatscans.com",
     "family": "mangareader",
-    "is_broken": false,
+    "is_broken": true,
     "is_nsfw": false,
     "list_path": "/manga"
   },
