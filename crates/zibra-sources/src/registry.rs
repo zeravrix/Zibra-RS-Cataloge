@@ -32,20 +32,44 @@ impl Default for LiveSourceRegistry {
 
 impl LiveSourceRegistry {
     pub fn new() -> Self {
-        let client = reqwest::Client::builder()
+        let b = reqwest::Client::builder()
             .timeout(Duration::from_secs(20))
             .connect_timeout(Duration::from_secs(6))
             .tcp_nodelay(true)
             .pool_idle_timeout(Duration::from_secs(90))
             .pool_max_idle_per_host(10)
-            .cookie_store(true)
-            .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
-            .build()
-            .unwrap_or_default();
+            .cookie_store(true);
+        #[cfg(target_os = "linux")]
+        let b = b.user_agent("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36");
+        #[cfg(not(target_os = "linux"))]
+        let b = b.user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36");
+        let client = b.build().unwrap_or_default();
         Self::new_with_client(client)
     }
 
     pub fn new_with_client(client: reqwest::Client) -> Self {
+        Self::new_with_client_and_settings(client, &zibra_core::AppSettings::default())
+    }
+
+    pub fn new_with_client_and_settings(
+        client: reqwest::Client,
+        settings: &zibra_core::AppSettings,
+    ) -> Self {
+        let domain_or = |id: &str, default_url: &str| -> String {
+            settings
+                .custom_source_domains
+                .get(id)
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .map(|s| {
+                    if s.starts_with("http://") || s.starts_with("https://") {
+                        s.to_string()
+                    } else {
+                        format!("https://{}", s)
+                    }
+                })
+                .unwrap_or_else(|| default_url.to_string())
+        };
         let mut sources: Vec<Arc<dyn Source>> = vec![
             Arc::new(MangaDexSource::new(client.clone())),
             Arc::new(MangaSwatSource::new(client.clone())),
@@ -55,7 +79,7 @@ impl LiveSourceRegistry {
             Arc::new(MadaraEngine::new(
                 "MANGALEK",
                 "Mangalek",
-                "https://mangalik.net",
+                domain_or("MANGALEK", "https://mangalik.net"),
                 "ar",
                 5,
                 vec![SourceTag::Arabic, SourceTag::Manhwa, SourceTag::Popular, SourceTag::VerifiedWorking],
@@ -64,7 +88,7 @@ impl LiveSourceRegistry {
             Arc::new(MadaraEngine::new(
                 "MANGASPARK",
                 "MangaSpark",
-                "https://sparkmanga.net",
+                domain_or("MANGASPARK", "https://sparkmanga.net"),
                 "ar",
                 6,
                 vec![SourceTag::Arabic, SourceTag::Manhwa, SourceTag::VerifiedWorking],
@@ -74,7 +98,7 @@ impl LiveSourceRegistry {
             Arc::new(MangaThemesiaEngine::new(
                 "ASURASCANS",
                 "Asura Scans",
-                "https://asuracomic.net",
+                domain_or("ASURASCANS", "https://asuracomic.net"),
                 "en",
                 8,
                 vec![SourceTag::English, SourceTag::Manhwa, SourceTag::Webtoon, SourceTag::Popular, SourceTag::VerifiedWorking],
@@ -83,7 +107,7 @@ impl LiveSourceRegistry {
             Arc::new(MangaThemesiaEngine::new(
                 "FLAMESCANS",
                 "Flame Comics",
-                "https://flamecomics.xyz",
+                domain_or("FLAMESCANS", "https://flamecomics.xyz"),
                 "en",
                 9,
                 vec![SourceTag::English, SourceTag::Manhwa, SourceTag::Webtoon, SourceTag::VerifiedWorking],
@@ -93,7 +117,7 @@ impl LiveSourceRegistry {
                 MadaraEngine::new(
                     "TOONILY",
                     "Toonily",
-                    "https://toonily.com",
+                    domain_or("TOONILY", "https://toonily.com"),
                     "en",
                     10,
                     vec![SourceTag::English, SourceTag::Manhwa, SourceTag::Webtoon, SourceTag::FastCdn],
@@ -104,7 +128,7 @@ impl LiveSourceRegistry {
             Arc::new(MadaraEngine::new(
                 "HARIMANGA",
                 "HariManga",
-                "https://harimanga.me",
+                domain_or("HARIMANGA", "https://harimanga.me"),
                 "en",
                 11,
                 vec![SourceTag::English, SourceTag::Manhwa, SourceTag::Webtoon],
@@ -113,7 +137,7 @@ impl LiveSourceRegistry {
             Arc::new(MadaraEngine::new(
                 "LEKMANGA",
                 "LekManga",
-                "https://lekmanga.net",
+                domain_or("LEKMANGA", "https://lekmanga.net"),
                 "ar",
                 12,
                 vec![SourceTag::Arabic, SourceTag::Manhwa, SourceTag::Popular],
@@ -122,7 +146,7 @@ impl LiveSourceRegistry {
             Arc::new(MadaraEngine::new(
                 "ARABTOONS",
                 "ArabToons",
-                "https://arabtoons.net",
+                domain_or("ARABTOONS", "https://arabtoons.net"),
                 "ar",
                 13,
                 vec![SourceTag::Arabic, SourceTag::Manhwa, SourceTag::Webtoon],
@@ -131,7 +155,7 @@ impl LiveSourceRegistry {
             Arc::new(MadaraEngine::new(
                 "MANHWACLAN",
                 "ManhwaClan",
-                "https://manhwaclan.com",
+                domain_or("MANHWACLAN", "https://manhwaclan.com"),
                 "en",
                 14,
                 vec![SourceTag::English, SourceTag::Manhwa, SourceTag::Webtoon],
@@ -140,21 +164,44 @@ impl LiveSourceRegistry {
             Arc::new(MadaraEngine::new(
                 "KUNMANGA",
                 "KunManga",
-                "https://kunmanga.com",
+                domain_or("KUNMANGA", "https://kunmanga.com"),
                 "en",
                 15,
                 vec![SourceTag::English, SourceTag::Manhwa, SourceTag::Manhua],
                 client.clone(),
             )),
             Arc::new(LocalFolderSource::new(PathBuf::from("./downloads"))),
-            Arc::new(SelfHostedServerSource::new_komga("http://localhost:25600")),
-            Arc::new(SelfHostedServerSource::new_kavita("http://localhost:5000")),
+            Arc::new(SelfHostedServerSource::new_komga_with_config(
+                &settings.komga_server_url,
+                &settings.komga_api_key,
+                client.clone(),
+            )),
+            Arc::new(SelfHostedServerSource::new_kavita_with_config(
+                &settings.kavita_server_url,
+                &settings.kavita_api_key,
+                client.clone(),
+            )),
         ];
 
         // Catalog sources never replace hand-written ones that share a host.
         let taken: HashSet<String> = sources.iter().map(|s| crate::catalog::host_key(s.base_url())).collect();
         match crate::catalog::parse(crate::catalog::BUNDLED) {
-            Ok(records) => sources.extend(crate::catalog::build(&records, &client, &taken, 100).0),
+            Ok(mut records) => {
+                if !settings.custom_source_domains.is_empty() {
+                    for r in &mut records {
+                        let rec_id = r
+                            .id
+                            .clone()
+                            .unwrap_or_else(|| format!("zibra:{}", r.name.to_lowercase()));
+                        if let Some(ov) = settings.custom_source_domains.get(&rec_id) {
+                            if !ov.trim().is_empty() {
+                                r.domain = ov.trim().to_string();
+                            }
+                        }
+                    }
+                }
+                sources.extend(crate::catalog::build(&records, &client, &taken, 100).0);
+            }
             Err(e) => eprintln!("zibra: bundled source catalog is invalid: {e}"),
         }
 

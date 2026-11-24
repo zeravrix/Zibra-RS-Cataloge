@@ -49,6 +49,13 @@ pub fn normalize_cover_url(raw: &str) -> String {
     let mut s = cleaned
         .replace("/thumb/", "/")
         .replace("/thumbs/", "/")
+        .replace("/thumbnail/", "/")
+        .replace("/thumbnails/", "/")
+        .replace("/thumbnail_", "/")
+        .replace("/thumb_", "/")
+        .replace("thumbnail_", "")
+        .replace("-thumbnail", "")
+        .replace("_thumbnail", "")
         .replace(" ", "%20");
     // Strip thumbnail resizing queries that downgrade covers to blurry 150px thumbnails
     if let Some(pos) = s.find("?resize=") {
@@ -260,6 +267,16 @@ pub fn is_junk_asset(url: &str) -> bool {
         || lower.contains("1x1")
 }
 
+#[cfg(target_os = "linux")]
+pub const DEFAULT_USER_AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+#[cfg(target_os = "linux")]
+pub const DEFAULT_PLATFORM: &str = "\"Linux\"";
+
+#[cfg(not(target_os = "linux"))]
+pub const DEFAULT_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+#[cfg(not(target_os = "linux"))]
+pub const DEFAULT_PLATFORM: &str = "\"Windows\"";
+
 pub async fn fetch_html_resilient(
     client: &reqwest::Client,
     url: &str,
@@ -267,12 +284,12 @@ pub async fn fetch_html_resilient(
 ) -> anyhow::Result<String> {
     let mut req = client
         .get(url)
-        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+        .header("User-Agent", DEFAULT_USER_AGENT)
         .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
         .header("Accept-Language", "en-US,en;q=0.9,ar;q=0.8")
         .header("Sec-Ch-Ua", "\"Google Chrome\";v=\"131\", \"Chromium\";v=\"131\", \"Not_A Brand\";v=\"24\"")
         .header("Sec-Ch-Ua-Mobile", "?0")
-        .header("Sec-Ch-Ua-Platform", "\"Windows\"")
+        .header("Sec-Ch-Ua-Platform", DEFAULT_PLATFORM)
         .header("Sec-Fetch-Dest", "document")
         .header("Sec-Fetch-Mode", "navigate")
         .header("Sec-Fetch-Site", "none")
@@ -300,7 +317,7 @@ pub async fn fetch_html_resilient(
                 }
             }
             if status.as_u16() == 403 {
-                return Err(HostUnavailable("Cloudflare / Bot Challenge (HTTP 403). Use the light browser solver to sync cookies.".into()).into());
+                return Err(HostUnavailable("Cloudflare / Bot Challenge (HTTP 403). Use Z Browser to sync cookies.".into()).into());
             } else if status.as_u16() == 404 {
                 anyhow::bail!("HTTP 404 Not Found (Endpoint does not exist on this source)");
             } else if status.as_u16() == 503 {
@@ -314,6 +331,10 @@ pub async fn fetch_html_resilient(
 }
 
 async fn fetch_via_curl(url: &str, referer: Option<&str>) -> anyhow::Result<String> {
+    let trimmed = url.trim();
+    if !trimmed.starts_with("http://") && !trimmed.starts_with("https://") {
+        anyhow::bail!("curl fallback only supports http/https URLs");
+    }
     let mut cmd = tokio::process::Command::new("curl");
     cmd.arg("-s")
         .arg("-L")
@@ -321,7 +342,7 @@ async fn fetch_via_curl(url: &str, referer: Option<&str>) -> anyhow::Result<Stri
         .arg("--max-time")
         .arg("15")
         .arg("-A")
-        .arg("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+        .arg(DEFAULT_USER_AGENT)
         .arg("-H")
         .arg("Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
         .arg("-H")
@@ -331,7 +352,7 @@ async fn fetch_via_curl(url: &str, referer: Option<&str>) -> anyhow::Result<Stri
         .arg("-H")
         .arg("Sec-Ch-Ua-Mobile: ?0")
         .arg("-H")
-        .arg("Sec-Ch-Ua-Platform: \"Windows\"")
+        .arg(format!("Sec-Ch-Ua-Platform: {}", DEFAULT_PLATFORM))
         .arg("-H")
         .arg("Sec-Fetch-Dest: document")
         .arg("-H")
@@ -341,9 +362,10 @@ async fn fetch_via_curl(url: &str, referer: Option<&str>) -> anyhow::Result<Stri
         .arg("-H")
         .arg("Sec-Fetch-User: ?1");
     if let Some(r) = referer {
-        cmd.arg("-H").arg(format!("Referer: {}", r));
+        let clean_ref = r.replace(['\r', '\n'], "");
+        cmd.arg("-H").arg(format!("Referer: {}", clean_ref));
     }
-    cmd.arg(url);
+    cmd.arg("--").arg(trimmed);
     let output = cmd.output().await?;
     if output.status.success() {
         let text = String::from_utf8_lossy(&output.stdout).to_string();
@@ -352,4 +374,23 @@ async fn fetch_via_curl(url: &str, referer: Option<&str>) -> anyhow::Result<Stri
         }
     }
     anyhow::bail!("curl fallback returned empty or failed");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_normalize_cover_url_teamx_olympus() {
+        let thumb = "https://cdn.olympustaff.com/images/manga/thumbnail_0a01b5ad6506dc25d228cafdd1c98d18.png";
+        let crisp = normalize_cover_url(thumb);
+        assert_eq!(crisp, "https://cdn.olympustaff.com/images/manga/0a01b5ad6506dc25d228cafdd1c98d18.png");
+    }
+
+    #[test]
+    fn test_normalize_cover_url_dimensions_and_resizing() {
+        let resized = "https://example.com/wp-content/uploads/cover-150x225.jpg?resize=150,225";
+        let norm = normalize_cover_url(resized);
+        assert_eq!(norm, "https://example.com/wp-content/uploads/cover.jpg");
+    }
 }

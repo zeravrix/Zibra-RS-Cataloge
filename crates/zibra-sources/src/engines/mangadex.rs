@@ -64,7 +64,7 @@ impl MangaDexSource {
         let resp = self
             .client
             .get(url)
-            .header("User-Agent", "Zibrax-App/2.2.0 (https://github.com/zeravrix/Project-Zibra)")
+            .header("User-Agent", "ZibraX-App/2.2.1 (https://github.com/zeravrix/ZibraX)")
             .send()
             .await?;
         let status = resp.status();

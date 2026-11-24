@@ -128,7 +128,7 @@ impl Source for ZeistEngine {
         };
         let items = self.parse_entries(&root);
         Ok(MangaPageResult {
-            has_next_page: items.len() >= 15,
+            has_next_page: !items.is_empty(),
             items,
         })
     }
@@ -144,7 +144,7 @@ impl Source for ZeistEngine {
         let root = self.fetch_feed(&url).await?;
         let items = self.parse_entries(&root);
         Ok(MangaPageResult {
-            has_next_page: items.len() >= 15,
+            has_next_page: !items.is_empty(),
             items,
         })
     }

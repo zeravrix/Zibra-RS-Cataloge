@@ -133,15 +133,51 @@ impl Source for AzoraSource {
             .nth(1)
             .and_then(|s| s.split('#').next())
             .unwrap_or(&manga.id);
-        let root = self
-            .api_get(&format!("{}/api/post?postSlug={}", self.api_url, urlencoding::encode(slug)))
-            .await?;
-        let ch_arr = root
-            .get("post")
-            .and_then(|p| p.get("chapters"))
-            .and_then(|c| c.as_array())
-            .cloned()
-            .unwrap_or_default();
+
+        // Primary: Azora's dedicated chapter endpoint /api/post/chapters?postSlug=<slug>
+        let mut ch_arr = match self
+            .api_get(&format!("{}/api/post/chapters?postSlug={}", self.api_url, urlencoding::encode(slug)))
+            .await
+        {
+            Ok(val) => {
+                if let Some(arr) = val.as_array() {
+                    arr.clone()
+                } else if let Some(arr) = val.get("post").and_then(|p| p.get("chapters")).and_then(|c| c.as_array()) {
+                    arr.clone()
+                } else {
+                    Vec::new()
+                }
+            }
+            Err(_) => Vec::new(),
+        };
+
+        // Fallback 1: Legacy /api/post?postSlug=<slug>
+        if ch_arr.is_empty() {
+            if let Ok(root) = self
+                .api_get(&format!("{}/api/post?postSlug={}", self.api_url, urlencoding::encode(slug)))
+                .await
+            {
+                if let Some(arr) = root.get("post").and_then(|p| p.get("chapters")).and_then(|c| c.as_array()) {
+                    ch_arr = arr.clone();
+                }
+            }
+        }
+
+        // Fallback 2: /api/chapters?postId=<id>
+        if ch_arr.is_empty() {
+            if let Some(post_id) = manga.id.split('#').nth(1) {
+                if !post_id.is_empty() {
+                    if let Ok(root) = self
+                        .api_get(&format!("{}/api/chapters?postId={}", self.api_url, post_id))
+                        .await
+                    {
+                        if let Some(arr) = root.get("post").and_then(|p| p.get("chapters")).and_then(|c| c.as_array()) {
+                            ch_arr = arr.clone();
+                        }
+                    }
+                }
+            }
+        }
 
         let mut list = Vec::new();
         for raw in ch_arr {
@@ -188,5 +224,21 @@ impl Source for AzoraSource {
             }
         }
         Ok(pages)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn test_azora_chapter_array_deserialization() {
+        let json_data = r#"[
+            {"id": 75278, "number": 1, "slug": "chapter-1", "title": null},
+            {"id": 75279, "number": 2, "slug": "chapter-2", "title": "Second Chapter"}
+        ]"#;
+        let parsed: serde_json::Value = serde_json::from_str(json_data).unwrap();
+        let arr = parsed.as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0].get("id").unwrap().as_i64().unwrap(), 75278);
+        assert_eq!(arr[0].get("number").unwrap().as_i64().unwrap(), 1);
     }
 }
